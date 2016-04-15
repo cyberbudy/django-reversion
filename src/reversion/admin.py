@@ -8,6 +8,7 @@ from django.db import models, transaction, connection
 from django.conf.urls import url
 from django.contrib import admin
 from django.contrib.admin import options
+from django.contrib.contenttypes.models import ContentType
 try:
     from django.contrib.admin.utils import unquote, quote
 except ImportError:  # Django < 1.7  pragma: no cover
@@ -26,7 +27,7 @@ from django.utils.encoding import force_text
 from django.utils.formats import localize
 
 from reversion.models import Version
-from reversion.revisions import default_revision_manager
+from reversion.revisions import default_revision_manager, get_changes_between_models
 
 
 class RollBackRevisionView(Exception):
@@ -58,10 +59,9 @@ class VersionAdmin(admin.ModelAdmin):
     ignore_duplicate_revisions = False
 
     # If True, then the default ordering of object_history and recover lists will be reversed.
-    history_latest_first = False
+    history_latest_first = False 
 
     # Revision helpers.
-
     @property
     def revision_context_manager(self):
         """The revision context manager for this VersionAdmin."""
@@ -106,12 +106,14 @@ class VersionAdmin(admin.ModelAdmin):
 
     def _autoregister(self, model, follow=None):
         """Registers a model with reversion, if required."""
+        print("\t\tAUTOREGISTER")
         if not self.revision_manager.is_registered(model):
             follow = follow or []
             # Use model_meta.concrete_model to catch proxy models
             for parent_cls, field in model._meta.concrete_model._meta.parents.items():
                 follow.append(field.name)
                 self._autoregister(parent_cls)
+            print(follow, model)
             self.revision_manager.register(model, follow=follow, format=self.reversion_format)
 
     def _introspect_inline_admin(self, inline):
@@ -136,13 +138,21 @@ class VersionAdmin(admin.ModelAdmin):
                         fk_name = field.name
                         break
             if fk_name and not inline_model._meta.get_field(fk_name).rel.is_hidden():
-                accessor = inline_model._meta.get_field(fk_name).related.get_accessor_name()
+                field = inline_model._meta.get_field(fk_name)
+                try:
+                    # >=django1.9
+                    remote_field = field.remote_field
+                except AttributeError:
+                    remote_field = field.related
+                accessor = remote_field.get_accessor_name()
                 follow_field = accessor
         return inline_model, follow_field, fk_name
 
     def __init__(self, *args, **kwargs):
         """Initializes the VersionAdmin"""
         super(VersionAdmin, self).__init__(*args, **kwargs)
+        print("admin fields")
+        print(self.fields)
         # Check that database transactions are supported.
         if not connection.features.uses_savepoints:  # pragma: no cover
             raise ImproperlyConfigured("Cannot use VersionAdmin with a database that does not support savepoints.")
@@ -172,12 +182,16 @@ class VersionAdmin(admin.ModelAdmin):
     # Views.
 
     def add_view(self, request, form_url='', extra_context=None):
+        print(self.fields)
         with self._create_revision(request):
+            self.exclude = ("moderated_status",)
             return super(VersionAdmin, self).add_view(request, form_url, extra_context)
 
     def change_view(self, request, object_id, form_url='', extra_context=None):
         with self._create_revision(request):
-            return super(VersionAdmin, self).change_view(request, object_id, form_url, extra_context)
+            self.exclude = ("moderated_status",)
+            f = super(VersionAdmin, self).change_view(request, object_id, form_url, extra_context)
+            return f
 
     def revisionform_view(self, request, version, template_name, extra_context=None):
         try:
@@ -206,17 +220,21 @@ class VersionAdmin(admin.ModelAdmin):
             raise PermissionDenied
         # Render the recover view.
         version = get_object_or_404(Version, pk=version_id)
-        return self.revisionform_view(request, version, self.recover_form_template or self._get_template_list("recover_form.html"), {
+        context = {
             "title": _("Recover %(name)s") % {"name": version.object_repr},
-        })
+        }
+        context.update(extra_context or {})
+        return self.revisionform_view(request, version, self.recover_form_template or self._get_template_list("recover_form.html"), context)
 
     def revision_view(self, request, object_id, version_id, extra_context=None):
         """Displays the contents of the given revision."""
         object_id = unquote(object_id) # Underscores in primary key get quoted to "_5F"
         version = get_object_or_404(Version, pk=version_id, object_id=object_id)
-        return self.revisionform_view(request, version, self.revision_form_template or self._get_template_list("revision_form.html"), {
+        context = {
             "title": _("Revert %(name)s") % {"name": version.object_repr},
-        })
+        }
+        context.update(extra_context or {})
+        return self.revisionform_view(request, version, self.revision_form_template or self._get_template_list("revision_form.html"), context)
 
     def changelist_view(self, request, extra_context=None):
         """Renders the change view."""
@@ -274,3 +292,42 @@ class VersionAdmin(admin.ModelAdmin):
         context = {"action_list": action_list}
         context.update(extra_context or {})
         return super(VersionAdmin, self).history_view(request, object_id, context)
+
+
+
+@admin.register(Version)
+class ModerationAdmin(admin.ModelAdmin):
+    model = Version
+    change_form_template = 'reversion/version_change_form.html'
+    readonly_fields = ("status",)
+    list_display = ("object_repr", "display_status", "date_created", "object_type")
+    list_filter = ("status",)
+
+    def display_status(self, obj):
+        return obj.get_status_display()
+
+    def date_created(self, obj):
+        return obj.revision.date_created
+
+    def object_type(self, obj):
+        return ContentType.objects.get(id=obj.content_type_id).model_class()._meta.verbose_name.title()
+
+    def change_view(self, request, object_id, extra_context=None):
+        version = Version.objects.get(pk=object_id)
+
+        changes = get_changes_between_models(new=version)
+
+        if request.POST:
+            if "reject" in request.POST:
+                version.reject()
+            elif "approve" in request.POST:
+                version.approve()
+                
+        extra_context = {
+            "changes": changes,
+            "status": version.get_status_display()
+        }
+        return super(ModerationAdmin, self).change_view(
+            request,
+            object_id,
+            extra_context=extra_context)

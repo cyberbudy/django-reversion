@@ -24,11 +24,21 @@ from django.db.models import Q, Max
 from django.db.models.query import QuerySet
 from django.db.models.signals import post_save
 from django.utils.encoding import force_text
+from django.utils.translation import ugettext as _
 
-from reversion.models import Revision, Version, has_int_pk
+from reversion.models import (
+    Revision, Version, has_int_pk,
+    safe_revert, moderation_safe_revert, get_versions_to_revert,
+    APPROVED, PENDING, REJECTED, CREATED
+)
 from reversion.signals import pre_revision_commit, post_revision_commit
 from reversion.errors import RevisionManagementError, RegistrationError
-
+from reversion.managers import VersionManager
+from reversion.diffs import BaseDiff, ForeignKeyDiff, ManyToManyDiff
+try:
+    from diff_match_patch import diff_match_patch as dmp
+except ImportError:  # pragma: no cover
+    pass
 
 class VersionAdapter(object):
 
@@ -43,12 +53,17 @@ class VersionAdapter(object):
     # Foreign key relationships to follow when saving a version of this model.
     follow = ()
 
+    # moderation permissions
+    auto_approve_by_superuser = True
+    auto_approve_by_staff = True
+    auto_approve_perms = []
     # The serialization format to use.
     format = "json"
 
     def __init__(self, model):
         """Initializes the version adapter."""
         self.model = model
+        self.exclude += ("moderated_status",)
 
     def get_fields_to_serialize(self):
         """Returns an iterable of field names to serialize in the version data."""
@@ -118,6 +133,25 @@ class VersionAdapter(object):
             "object_repr": force_text(obj),
         }
 
+    def get_object_status(self, obj, user=None):
+        if not user:
+            return PENDING
+
+        print(self.auto_approve_by_superuser, user.is_staff, user.has_perms(self.auto_approve_perms))
+        if user.is_superuser and self.auto_approve_by_superuser:
+            return APPROVED
+        elif user.is_staff and self.auto_approve_by_staff:
+            return APPROVED
+        elif self.auto_approve_perms and user.has_perms(self.auto_approve_perms):
+            return APPROVED
+
+        created_versions = Version.objects.filter(
+            object_id=obj.id, status=CREATED,
+            content_type=ContentType.objects.get_for_model(obj))
+
+        if not created_versions:
+            return CREATED
+        return PENDING
 
 class RevisionContextStackFrame(object):
 
@@ -383,8 +417,11 @@ class RevisionManager(object):
             in self._registered_models.keys()
         ]
 
-    def register(self, model=None, adapter_cls=VersionAdapter, signals=None, eager_signals=None, **field_overrides):
+    def register(self, model=None, manager_name="objects", adapter_cls=VersionAdapter, signals=None, eager_signals=None, **field_overrides):
         """Registers a model with this revision manager."""
+        print("\t\tREGISTERMODEL")
+
+        print(model, adapter_cls, signals, field_overrides)
         # Default to post_save if no signals are given
         if signals is None and eager_signals is None:
             signals = [post_save]
@@ -405,6 +442,16 @@ class RevisionManager(object):
         # Perform the registration.
         adapter_obj = adapter_cls(model)
         self._registered_models[self._registration_key_for_model(model)] = adapter_obj
+
+        # add visibility field for each model for moderation
+        model.add_to_class(
+                "moderated_status",
+                models.SmallIntegerField(
+                    verbose_name=_("Moderation status"), default=PENDING)
+            )
+        # add additional filter to queryset for each moderated model
+        model.add_to_class(manager_name, VersionManager())
+        
         # Connect to the selected signals of the model.
         all_signals = self._signals[model] + self._eager_signals[model]
         for signal in all_signals:
@@ -456,9 +503,30 @@ class RevisionManager(object):
             revision__manager_slug = self._manager_slug,
         ).select_related("revision")
 
-    def save_revision(self, objects, ignore_duplicates=False, user=None, comment="", meta=(), db=None):
+    def remove_old_pendings(self, versions, db=None):
+        if not versions:
+            return
+        print("\tREMOVE OLD PENDINGS")
+        print([x.object_id for x in versions], [x.content_type for x in versions], PENDING)
+        self._get_versions(db).filter(
+            object_id__in=[x.object_id for x in versions],
+            content_type__in=[x.content_type for x in versions],
+            status=PENDING,
+        ).delete()
+
+    def remove_old_approves(self, versions, db=None):
+        if not versions:
+            return
+        self._get_versions(db).filter(
+            object_id__in=[x.object_id for x in versions],
+            content_type__in=[x.content_type for x in versions],
+            status__in=[CREATED, APPROVED],
+        ).delete()
+
+    def save_revision(self, objects, ignore_duplicates=True, user=None, comment="", meta=(), db=None):
         """Saves a new revision."""
         # Adapt the objects to a dict.
+        print("\t\tSaverevision")
         if isinstance(objects, (list, tuple)):
             objects = dict(
                 (obj, self.get_adapter(obj.__class__).get_version_data(obj, db))
@@ -471,9 +539,16 @@ class RevisionManager(object):
                 if not obj in objects:
                     adapter = self.get_adapter(obj.__class__)
                     objects[obj] = adapter.get_version_data(obj)
+
+            # Set moderation statuses to versions due to user perms
+            for obj in objects.keys():
+                adapter = self.get_adapter(obj.__class__)
+                objects[obj].update({"status": adapter.get_object_status(obj, user)})
+
             # Create all the versions without saving them
             ordered_objects = list(objects.keys())
             new_versions = [Version(**objects[obj]) for obj in ordered_objects]
+
             # Check if there's some change in all the revision's objects.
             save_revision = True
             if ignore_duplicates:
@@ -490,6 +565,28 @@ class RevisionManager(object):
                             save_revision = False
             # Only save if we're always saving, or have changes.
             if save_revision:
+                # check for previous objects' revisions, if pending - revert
+                pendings = []
+                approved = []
+
+                for version in new_versions:
+                    if version.status == PENDING:
+                        pendings.append(version)
+                    elif version.status == APPROVED:
+                        approved.append(version)
+                            
+                print("\t\tPENDINGS")
+                print(pendings)
+                if pendings:
+                    to_revert = get_versions_to_revert(pendings)
+                    moderation_safe_revert(to_revert)
+                    self.remove_old_pendings(pendings, db)
+
+                if approved:
+                    self.remove_old_approves(approved, db)                
+                # for version in approved:
+
+                subqueries = [Q(object_id=version.object_id, content_type=version.content_type) for version in new_versions]
                 # Save a new revision.
                 revision = Revision(
                     manager_slug = self._manager_slug,
@@ -502,10 +599,12 @@ class RevisionManager(object):
                     revision = revision,
                     versions = new_versions,
                 )
+                
                 # Save the revision.
                 with transaction.atomic(using=db):
                     revision.save(using=db)
                     # Save version models.
+                    
                     for version in new_versions:
                         version.revision = revision
                         version.save()
@@ -522,13 +621,15 @@ class RevisionManager(object):
                 return revision
 
     # Revision management API.
-
-    def get_for_object_reference(self, model, object_id, db=None):
+    def get_for_object_reference(self, model, object_id, db=None, status=None):
         """
         Returns all versions for the given object reference.
 
         The results are returned with the most recent versions first.
         """
+        if not object_id:
+            return []
+
         content_type = ContentType.objects.db_manager(db).get_for_model(model)
         versions = self._get_versions(db).filter(
             content_type = content_type,
@@ -541,6 +642,9 @@ class RevisionManager(object):
             # We can't do this using an index. Never mind.
             object_id = force_text(object_id)
             versions = versions.filter(object_id=object_id)
+
+        if status:
+            versions.filter(status=status)
         versions = versions.order_by("-pk")
         return versions
 
@@ -551,6 +655,24 @@ class RevisionManager(object):
         The results are returned with the most recent versions first.
         """
         return self.get_for_object_reference(obj.__class__, obj.pk, db)
+
+    def get_moderated_version(self, obj, db=None):
+        """Returns the last moderated version of the object"""
+        if not obj:
+            return None
+        try:
+            return self.get_for_object_reference(
+                obj.__class__, obj.pk, db, APPROVED)[0]
+        except IndexError:
+            return None
+
+    def get_pending_version(self, obj, db=None):
+        """Returns the last moderated version of the object"""
+        try:
+            return self.get_for_object_reference(
+                obj.__class__, obj.pk, db, PENDING)[0]
+        except IndexError:
+            return None
 
     def get_unique_for_object(self, obj, db=None):
         """
@@ -613,6 +735,8 @@ class RevisionManager(object):
 
     def _signal_receiver(self, instance, signal, **kwargs):
         """Adds registered models to the current revision, if any."""
+        # print("\t\tSUGNAL RECEIVER")
+        print(instance, signal, kwargs)
         if self._revision_context_manager.is_active() and not self._revision_context_manager.is_managing_manually():
             eager = signal in self._eager_signals[instance.__class__]
             adapter = self.get_adapter(instance.__class__)
@@ -629,6 +753,67 @@ class RevisionManager(object):
             else:
                 version_data = lambda: adapter.get_version_data(instance, self._revision_context_manager._db)
                 self._revision_context_manager.add_to_context(self, instance, version_data)
+
+
+def get_changes_between_models(new, old=None):
+    if not new:
+        return 
+
+    if not old:
+        ct = ContentType.objects.get(id=new.content_type_id)
+        Model = ct.model_class()
+        old = Model.objects.get(id=new.object_id)
+
+    adapter = get_adapter(old.__class__)
+    new_data = new.field_dict
+
+    if adapter:
+        opts = adapter.model._meta.concrete_model._meta
+        fields = adapter.fields or (field.name for field in opts.local_fields + opts.local_many_to_many)
+        fields = (opts.get_field(field) for field in fields if not field in adapter.exclude)
+    else:
+        fields = []
+
+    changes = []
+    diffs = {}
+    for field in fields:
+        if field.many_to_many:
+            dif = ManyToManyDiff(
+                field,
+                getattr(old, field.name).all(),
+                field.related_model.objects.filter(
+                    id__in=new_data.get(field.name, []))
+            )
+
+            if dif.margin():
+                diffs[field.name] = dif
+            else:
+                continue
+        elif isinstance(field, models.ForeignKey):
+            value1 = getattr(old, field.name)
+            value2 = new_data.get(field.name, None)
+
+            dif = ForeignKeyDiff(
+                field,
+                value1, field.related_model.objects.get(id=value2))
+            if dif.margin():
+                diffs[field.name] = dif
+            else:
+                continue
+        else:
+            value1 = getattr(old, field.name)
+            value2 = new_data.get(field.name)
+
+            if value1 != value2:
+                diffs[field.name] = BaseDiff(field, value1, value2)
+                print(diffs[field.name].render())
+            else:
+                continue
+            # diffs[field.name] = dmp().diff_main(force_text(value1), force_text(value2))
+        # print([dmp().diff_prettyHtml(x) for x in diffs.values()])
+
+        
+    return diffs
 
 
 # A shared revision manager.
@@ -662,6 +847,8 @@ set_ignore_duplicates = revision_context_manager.set_ignore_duplicates
 # Low level API.
 get_for_object_reference = default_revision_manager.get_for_object_reference
 get_for_object = default_revision_manager.get_for_object
+get_moderated_version = default_revision_manager.get_moderated_version
+get_pending_version = default_revision_manager.get_pending_version
 get_unique_for_object = default_revision_manager.get_unique_for_object
 get_for_date = default_revision_manager.get_for_date
 get_deleted = default_revision_manager.get_deleted

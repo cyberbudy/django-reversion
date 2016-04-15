@@ -16,6 +16,17 @@ from django.utils.encoding import force_text, python_2_unicode_compatible
 
 from reversion.errors import RevertError
 
+APPROVED = 2
+PENDING = 1
+CREATED = 0
+REJECTED = -1
+
+MODERATION_STATUSES_CHOICES = [
+    (APPROVED, _("Approved")),
+    (PENDING, _("Pending")),
+    (CREATED, _("Created")),
+    (REJECTED _("Rejected")),
+]
 
 def safe_revert(versions):
     """
@@ -35,6 +46,31 @@ def safe_revert(versions):
         raise RevertError("Could not revert revision, due to database integrity errors.")
     if unreverted_versions:  # pragma: no cover
         safe_revert(unreverted_versions)
+
+
+def moderation_safe_revert(versions):
+    """
+    If we're creating pending version we should revert object in database to the last approved/created version
+    For now - it's just basic safe_revert
+    """
+    safe_revert(vresions)
+
+
+def to_revert(versions):
+    """
+    Get the last moderated/created version for each version
+    """
+    approved = []
+
+    for version in versions:
+        v = Version.objects.filter(
+            content_type_id=version.content_type_id,
+            object_id=version.object_id,
+            status__in=[CREATED, APPROVED]
+        ).order_by("-revision__created_data", "revision__updated_at")[:1]
+        if v:
+            approved.append(v)
+    return approved
 
 
 UserModel = getattr(settings, 'AUTH_USER_MODEL', 'auth.User')
@@ -157,6 +193,7 @@ class Version(models.Model):
     serialized_data = models.TextField(help_text="The serialized form of this version of the model.")
 
     object_repr = models.TextField(help_text="A string representation of the object.")
+    status = m.IntegerField(choices=MODERATION_STATUSES_CHOICES, default=PENDING)
 
     @property
     def object_version(self):
@@ -203,6 +240,20 @@ class Version(models.Model):
     def revert(self):
         """Recovers the model in this version."""
         self.object_version.save()
+
+    def approve(self):
+        """approve current version, revert model object to this version"""
+        self.status = APPROVED
+        self.save()
+        with transaction.atomic():
+            self.revert()
+
+
+    def reject(self):
+        """reject current version"""
+        self.status = REJECTED
+        self.save()
+
 
     def __str__(self):
         """Returns a unicode representation."""
