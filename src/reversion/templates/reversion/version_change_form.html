@@ -1,0 +1,75 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+{% block extrahead %}
+<style>
+    input.deletelink {
+        background: #ba2121;
+        border-radius: 4px;
+        padding: 10px 15px;
+        line-height: 15px;
+        color: #fff;
+    }
+    input.deletelink:hover,
+    input.deletelink:visited,
+    input.deletelink:focus {
+       background-color: #CC3434;
+    }
+    del {
+        background:#ffe6e6;
+    }
+    ins {
+        background:#e6ffe6;
+        text-decoration: none;
+    }
+</style>
+{% endblock extrahead %}
+{% block content_title %}
+    {% if title %}
+        <h1>{{ title }} {% if status %}({{status}}){% endif %}</h1>
+    {% endif %}
+{% endblock %}
+{% block content %}
+{% block object-tools %}
+{% if object_admin_url %}
+    <ul class="object-tools">
+    <li><a href="{{ object_admin_url }}" class="historylink">{% trans "Change object" %}</a></li>
+    </ul>
+{% endif %}
+{% endblock %}
+
+<form enctype="multipart/form-data" action="" method="post"
+id="version_form">{% csrf_token %}
+
+{% if changes %}
+    <div>
+       <div>
+        <fieldset class="module aligned ">
+        <h2>{% trans "Object differences" %}</h2>
+        
+        {% for field, change in changes.iteritems %}
+            {% if change %}
+            <div class="form-row {{ field }}">
+                <div>
+                    <label style="font-size: 14px; font-weight: bold;">{{ field }}</label><p style="width:800px;">{{ change.render|escape|safe }}</p>
+                </div>
+            </div>
+            {% endif %}
+        {% endfor %}
+        </fieldset>
+    
+    {% if status != "Approved" %}
+        <div class="submit-row" >
+            <input type="submit" value="{% trans 'Approve' %}" name="approve" />
+            {% if status == "Pending" %}
+                <input type="submit" value="{% trans 'Reject' %}" name="reject" class="deletelink" />
+            {% endif %}
+        </div>
+    {% endif %}
+{% else %}
+    <div>{% trans "No changes. It's an actual version" %}</div>    
+{% endif %}
+
+</form>
+</div>
+
+{% endblock %}
