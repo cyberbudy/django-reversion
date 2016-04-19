@@ -3,6 +3,13 @@
 from django.utils.encoding import force_text
 from django.template.loader import render_to_string 
 from django.shortcuts import render_to_response
+from django.db import models
+try:
+    from filer.fields.image import FilerImageField
+    from filer.models.imagemodels import Image
+    filer_image = True
+except:
+    filer_image = False
 
 try:
     from diff_match_patch import diff_match_patch
@@ -43,7 +50,6 @@ class BaseDiff(object):
     def render(self, context=None):
         if not context:
             context = self.diff
-        # return context.values()
         return render_to_response(self.template, context).content
 
 
@@ -56,6 +62,29 @@ class ForeignKeyDiff(BaseDiff):
         return {
             "left": str(self.old_value),
             "right": str(self.new_value)
+        }
+
+
+class ImageDiff(BaseDiff):
+    template = "reversion/image_diff.html"
+
+    @property
+    def diff(self):
+        if (filer_image and isinstance(self.field, FilerImageField) or 
+                isinstance(self.field, models.ImageField)):
+            if self.old_value:
+                left_image = Image.objects.get(id=self.old_value).icons["64"]
+            else:
+                left_image = None
+            if self.new_value:
+                right_image = Image.objects.get(id=self.new_value).icons["64"]
+            else:
+                right_image = None
+        else:
+            return {}
+        return {
+            'left': left_image,
+            'right': right_image
         }
 
 
@@ -77,9 +106,9 @@ class ManyToManyDiff(BaseDiff):
     @property
     def diff(self):
         clean_diff = None
-        # get removed items
-        left = self.new_value-self.old_value
         # get new items
+        left = self.new_value-self.old_value
+        # get removed items
         right = self.old_value-self.new_value
         
         return {

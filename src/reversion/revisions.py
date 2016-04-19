@@ -29,16 +29,23 @@ from django.utils.translation import ugettext as _
 from reversion.models import (
     Revision, Version, has_int_pk,
     safe_revert, moderation_safe_revert, get_versions_to_revert,
-    APPROVED, PENDING, REJECTED, CREATED
+    APPROVED, PENDING, REJECTED
 )
 from reversion.signals import pre_revision_commit, post_revision_commit
 from reversion.errors import RevisionManagementError, RegistrationError
 from reversion.managers import VersionManager
-from reversion.diffs import BaseDiff, ForeignKeyDiff, ManyToManyDiff
+from reversion.diffs import *
 try:
     from diff_match_patch import diff_match_patch as dmp
 except ImportError:  # pragma: no cover
     pass
+
+try:
+    from filer.fields.image import FilerImageField
+    filer_image_field = True
+except ImportError:  # pragma: no cover
+    filer_image_field = False
+
 
 class VersionAdapter(object):
 
@@ -137,20 +144,12 @@ class VersionAdapter(object):
         if not user:
             return PENDING
 
-        print(self.auto_approve_by_superuser, user.is_staff, user.has_perms(self.auto_approve_perms))
         if user.is_superuser and self.auto_approve_by_superuser:
             return APPROVED
         elif user.is_staff and self.auto_approve_by_staff:
             return APPROVED
         elif self.auto_approve_perms and user.has_perms(self.auto_approve_perms):
             return APPROVED
-
-        created_versions = Version.objects.filter(
-            object_id=obj.id, status=CREATED,
-            content_type=ContentType.objects.get_for_model(obj))
-
-        if not created_versions:
-            return CREATED
         return PENDING
 
 class RevisionContextStackFrame(object):
@@ -419,9 +418,6 @@ class RevisionManager(object):
 
     def register(self, model=None, manager_name="objects", adapter_cls=VersionAdapter, signals=None, eager_signals=None, **field_overrides):
         """Registers a model with this revision manager."""
-        print("\t\tREGISTERMODEL")
-
-        print(model, adapter_cls, signals, field_overrides)
         # Default to post_save if no signals are given
         if signals is None and eager_signals is None:
             signals = [post_save]
@@ -506,12 +502,10 @@ class RevisionManager(object):
     def remove_old_pendings(self, versions, db=None):
         if not versions:
             return
-        print("\tREMOVE OLD PENDINGS")
-        print([x.object_id for x in versions], [x.content_type for x in versions], PENDING)
         self._get_versions(db).filter(
             object_id__in=[x.object_id for x in versions],
             content_type__in=[x.content_type for x in versions],
-            status=PENDING,
+            status__in=[PENDING, REJECTED]
         ).delete()
 
     def remove_old_approves(self, versions, db=None):
@@ -520,13 +514,12 @@ class RevisionManager(object):
         self._get_versions(db).filter(
             object_id__in=[x.object_id for x in versions],
             content_type__in=[x.content_type for x in versions],
-            status__in=[CREATED, APPROVED],
+            status__in=[APPROVED, REJECTED]
         ).delete()
 
     def save_revision(self, objects, ignore_duplicates=True, user=None, comment="", meta=(), db=None):
         """Saves a new revision."""
         # Adapt the objects to a dict.
-        print("\t\tSaverevision")
         if isinstance(objects, (list, tuple)):
             objects = dict(
                 (obj, self.get_adapter(obj.__class__).get_version_data(obj, db))
@@ -575,8 +568,6 @@ class RevisionManager(object):
                     elif version.status == APPROVED:
                         approved.append(version)
                             
-                print("\t\tPENDINGS")
-                print(pendings)
                 if pendings:
                     to_revert = get_versions_to_revert(pendings)
                     moderation_safe_revert(to_revert)
@@ -584,7 +575,6 @@ class RevisionManager(object):
 
                 if approved:
                     self.remove_old_approves(approved, db)                
-                # for version in approved:
 
                 subqueries = [Q(object_id=version.object_id, content_type=version.content_type) for version in new_versions]
                 # Save a new revision.
@@ -604,10 +594,14 @@ class RevisionManager(object):
                 with transaction.atomic(using=db):
                     revision.save(using=db)
                     # Save version models.
-                    
                     for version in new_versions:
                         version.revision = revision
                         version.save()
+
+                        if version.status == APPROVED:
+                            version.approve()
+                        elif version.status == PENDING:
+                            version.defer()
                     # Save the meta information.
                     for cls, kwargs in meta:
                         cls._default_manager.db_manager(db).create(revision=revision, **kwargs)
@@ -618,6 +612,9 @@ class RevisionManager(object):
                     versions = new_versions,
                 )
                 # Return the revision.
+                # for version in new_versions:
+                #     if version.status == APPROVED:
+                #         version.approve()
                 return revision
 
     # Revision management API.
@@ -735,8 +732,6 @@ class RevisionManager(object):
 
     def _signal_receiver(self, instance, signal, **kwargs):
         """Adds registered models to the current revision, if any."""
-        # print("\t\tSUGNAL RECEIVER")
-        print(instance, signal, kwargs)
         if self._revision_context_manager.is_active() and not self._revision_context_manager.is_managing_manually():
             eager = signal in self._eager_signals[instance.__class__]
             adapter = self.get_adapter(instance.__class__)
@@ -757,12 +752,15 @@ class RevisionManager(object):
 
 def get_changes_between_models(new, old=None):
     if not new:
-        return 
+        return
 
     if not old:
         ct = ContentType.objects.get(id=new.content_type_id)
         Model = ct.model_class()
-        old = Model.objects.get(id=new.object_id)
+        try:
+            old = Model.objects.get(id=new.object_id)
+        except ObjectDoesNotExist:
+            return _("Sorry. This object does not exsist.")
 
     adapter = get_adapter(old.__class__)
     new_data = new.field_dict
@@ -776,6 +774,7 @@ def get_changes_between_models(new, old=None):
 
     changes = []
     diffs = {}
+    
     for field in fields:
         if field.many_to_many:
             dif = ManyToManyDiff(
@@ -789,13 +788,24 @@ def get_changes_between_models(new, old=None):
                 diffs[field.name] = dif
             else:
                 continue
+        elif (isinstance(field, models.ImageField) or
+                filer_image_field and isinstance(field, FilerImageField)):
+            diff = ImageDiff(field, getattr(old, field.name+"_id"), new_data.get(field.name))
+
+            if diff.margin():
+                diffs[field.name] = diff
+            else:
+                continue
         elif isinstance(field, models.ForeignKey):
             value1 = getattr(old, field.name)
-            value2 = new_data.get(field.name, None)
 
-            dif = ForeignKeyDiff(
-                field,
-                value1, field.related_model.objects.get(id=value2))
+            try:
+                value2 = field.related_model.objects.get(id=new_data.get(field.name, None))
+            except ObjectDoesNotExist:
+                value2 = None
+
+            dif = ForeignKeyDiff(field, value1, value2)
+
             if dif.margin():
                 diffs[field.name] = dif
             else:
@@ -806,13 +816,8 @@ def get_changes_between_models(new, old=None):
 
             if value1 != value2:
                 diffs[field.name] = BaseDiff(field, value1, value2)
-                print(diffs[field.name].render())
             else:
                 continue
-            # diffs[field.name] = dmp().diff_main(force_text(value1), force_text(value2))
-        # print([dmp().diff_prettyHtml(x) for x in diffs.values()])
-
-        
     return diffs
 
 

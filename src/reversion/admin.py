@@ -8,7 +8,9 @@ from django.db import models, transaction, connection
 from django.conf.urls import url
 from django.contrib import admin
 from django.contrib.admin import options
+from django.core import urlresolvers
 from django.contrib.contenttypes.models import ContentType
+from django.shortcuts import redirect
 try:
     from django.contrib.admin.utils import unquote, quote
 except ImportError:  # Django < 1.7  pragma: no cover
@@ -25,8 +27,9 @@ from django.utils.text import capfirst
 from django.utils.translation import ugettext as _
 from django.utils.encoding import force_text
 from django.utils.formats import localize
+from django.contrib import messages
 
-from reversion.models import Version
+from reversion.models import Version, APPROVED
 from reversion.revisions import default_revision_manager, get_changes_between_models
 
 
@@ -39,7 +42,7 @@ class VersionAdmin(admin.ModelAdmin):
 
     """Abstract admin class for handling version controlled models."""
 
-    object_history_template = "reversion/object_history.html"
+    # object_history_template = "reversion/object_history.html"
 
     change_list_template = "reversion/change_list.html"
 
@@ -106,14 +109,12 @@ class VersionAdmin(admin.ModelAdmin):
 
     def _autoregister(self, model, follow=None):
         """Registers a model with reversion, if required."""
-        print("\t\tAUTOREGISTER")
         if not self.revision_manager.is_registered(model):
             follow = follow or []
             # Use model_meta.concrete_model to catch proxy models
             for parent_cls, field in model._meta.concrete_model._meta.parents.items():
                 follow.append(field.name)
                 self._autoregister(parent_cls)
-            print(follow, model)
             self.revision_manager.register(model, follow=follow, format=self.reversion_format)
 
     def _introspect_inline_admin(self, inline):
@@ -151,8 +152,6 @@ class VersionAdmin(admin.ModelAdmin):
     def __init__(self, *args, **kwargs):
         """Initializes the VersionAdmin"""
         super(VersionAdmin, self).__init__(*args, **kwargs)
-        print("admin fields")
-        print(self.fields)
         # Check that database transactions are supported.
         if not connection.features.uses_savepoints:  # pragma: no cover
             raise ImproperlyConfigured("Cannot use VersionAdmin with a database that does not support savepoints.")
@@ -174,20 +173,33 @@ class VersionAdmin(admin.ModelAdmin):
         opts = self.model._meta
         info = opts.app_label, opts.model_name,
         reversion_urls = [
-                                  url("^recover/$", admin_site.admin_view(self.recoverlist_view), name='%s_%s_recoverlist' % info),
-                                  url("^recover/([^/]+)/$", admin_site.admin_view(self.recover_view), name='%s_%s_recover' % info),
-                                  url("^([^/]+)/history/([^/]+)/$", admin_site.admin_view(self.revision_view), name='%s_%s_revision' % info),]
+            url("^recover/$", admin_site.admin_view(self.recoverlist_view), name='%s_%s_recoverlist' % info),
+            url("^recover/([^/]+)/$", admin_site.admin_view(self.recover_view), name='%s_%s_recover' % info),
+          url("^([^/]+)/history/([^/]+)/$", 
+            admin_site.admin_view(self.revision_view), name='%s_%s_revision' % info),
+        ]
         return reversion_urls + urls
 
     # Views.
-
     def add_view(self, request, form_url='', extra_context=None):
-        print(self.fields)
         with self._create_revision(request):
             self.exclude = ("moderated_status",)
             return super(VersionAdmin, self).add_view(request, form_url, extra_context)
 
     def change_view(self, request, object_id, form_url='', extra_context=None):
+        objs = Version.objects.filter(
+            content_type=ContentType.objects.get_for_model(self.model),
+            object_id=object_id
+        ).order_by("-revision__date_created", "-revision__date_updated")
+        obj = None
+
+        if objs:
+            obj = objs[0]
+
+        if obj and obj.status == APPROVED:
+            messages.add_message(request, messages.INFO, _("This object has been approved and visible on the site"))
+        elif obj:
+            messages.add_message(request, messages.INFO, _("This object version has not been approved and not visible on the site right now"))
         with self._create_revision(request):
             self.exclude = ("moderated_status",)
             f = super(VersionAdmin, self).change_view(request, object_id, form_url, extra_context)
@@ -272,26 +284,32 @@ class VersionAdmin(admin.ModelAdmin):
 
     def history_view(self, request, object_id, extra_context=None):
         """Renders the history view."""
-        # Check if user has change permissions for model
-        if not self.has_change_permission(request):  # pragma: no cover
+        # Check if user has all stack of permissions permissions for model
+        if (not self.has_change_permission(request) or
+                not self.has_delete_permission(request)):  # pragma: no cover
             raise PermissionDenied
         object_id = unquote(object_id) # Underscores in primary key get quoted to "_5F"
-        opts = self.model._meta
-        action_list = [
-            {
-                "revision": version.revision,
-                "url": reverse("%s:%s_%s_revision" % (self.admin_site.name, opts.app_label, opts.model_name), args=(quote(version.object_id), version.id)),
-            }
-            for version
-            in self._order_version_queryset(self.revision_manager.get_for_object_reference(
-                self.model,
-                object_id,
-            ).select_related("revision__user"))
-        ]
-        # Compile the context.
-        context = {"action_list": action_list}
-        context.update(extra_context or {})
-        return super(VersionAdmin, self).history_view(request, object_id, context)
+        opts = Version._meta
+        version = Version.objects.filter(
+            object_id=object_id, content_type_id=ContentType.objects.get_for_model(self.model).id
+        ).order_by("-revision__date_created", "-revision__date_updated")[0]
+        # opts = self.model._meta
+        # action_list = [
+        #     {
+        #         "revision": version.revision,
+        #         "url": reverse("%s:%s_%s_revision" % (self.admin_site.name, opts.app_label, opts.model_name), args=(quote(version.object_id), version.id)),
+        #     }
+        #     for version
+        #     in self._order_version_queryset(self.revision_manager.get_for_object_reference(
+        #         self.model,
+        #         object_id,
+        #     ).select_related("revision__user"))
+        # ]
+        # # Compile the context.
+        # context = {"action_list": action_list}
+        # context.update(extra_context or {})
+        return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
+        # return super(VersionAdmin, self).history_view(request, object_id, extra_context)
 
 
 
@@ -300,7 +318,7 @@ class ModerationAdmin(admin.ModelAdmin):
     model = Version
     change_form_template = 'reversion/version_change_form.html'
     readonly_fields = ("status",)
-    list_display = ("object_repr", "display_status", "date_created", "object_type")
+    list_display = ("object_repr", "display_status", "date_created", "object_type", "changed_by")
     list_filter = ("status",)
 
     def display_status(self, obj):
@@ -309,19 +327,30 @@ class ModerationAdmin(admin.ModelAdmin):
     def date_created(self, obj):
         return obj.revision.date_created
 
+    def changed_by(self, obj):
+        return obj.revision.user.username
+
     def object_type(self, obj):
         return ContentType.objects.get(id=obj.content_type_id).model_class()._meta.verbose_name.title()
 
+    # remove add button
+    def has_add_permission(self, request):
+        return False
+
     def change_view(self, request, object_id, extra_context=None):
         version = Version.objects.get(pk=object_id)
-
         changes = get_changes_between_models(new=version)
 
+        if not isinstance(changes, dict):
+            version.delete()
+            return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
         if request.POST:
             if "reject" in request.POST:
                 version.reject()
+                return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
             elif "approve" in request.POST:
                 version.approve()
+                return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
                 
         extra_context = {
             "changes": changes,

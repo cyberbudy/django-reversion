@@ -10,21 +10,29 @@ from reversion.models import PENDING, REJECTED, APPROVED
 class VersionManager(Manager):
     use_for_related_fields = True
     
-    # def get_queryset(self):
-    #     query_set = None
-    #     print("get")
+    def get_queryset(self):
+        query_set = None
+
+        if django_17():
+            query_set = super(VersionManager, self).get_queryset()
+        else:
+            query_set = super(VersionManager, self).get_query_set()
+        return query_set.filter(**{"moderated_status": APPROVED})
+
+    # def unmoderated(self):
+    #     if django_17():
+    #         query_set = super(VersionManager, self).get_queryset()
+    #     else:
+    #         query_set = super(VersionManager, self).get_query_set()
+    #     return query_set.exclude(**{"moderated_status": APPROVED})
+
+
+    # def moderated(self):
     #     if django_17():
     #         query_set = super(VersionManager, self).get_queryset()
     #     else:
     #         query_set = super(VersionManager, self).get_query_set()
     #     return query_set.filter(**{"moderated_status": APPROVED})
-
-    def not_approved(self):
-        if django_17():
-            query_set = super(VersionManager, self).get_queryset()
-        else:
-            query_set = super(VersionManager, self).get_query_set()
-        return query_set.exclude(**{"moderated_status": APPROVED})
 
 
 
