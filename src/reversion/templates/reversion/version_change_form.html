@@ -61,14 +61,12 @@ id="version_form">{% csrf_token %}
         <div>{% trans "It's a version of the actual object" %}</div>    
     {% endif %}
 
-    {% if status != "Approved" %}
-        <div class="submit-row" >
-            <input type="submit" value="{% trans 'Approve' %}" name="approve" />
-            {% if status == "Pending" %}
-                <input type="submit" value="{% trans 'Reject' %}" name="reject" class="deletelink" />
-            {% endif %}
-        </div>
-    {% endif %}
+    <div class="submit-row" >
+        <input type="submit" value="{% trans 'Approve' %}" name="approve" />
+        {% if status == "Pending" %}
+            <input type="submit" value="{% trans 'Reject' %}" name="reject" class="deletelink" />
+        {% endif %}
+    </div>
 {% endif %}
 
 </form>

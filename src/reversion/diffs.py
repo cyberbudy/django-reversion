@@ -6,6 +6,8 @@ from django.shortcuts import render_to_response
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from reversion.revisions import get_adapter
+from django.core.exceptions import ObjectDoesNotExist
+from django.utils.translation import ugettext as _
 
 try:
     from filer.fields.image import FilerImageField
@@ -163,10 +165,11 @@ def get_changes_between_models(new, old=None):
     if not old:
         ct = ContentType.objects.get(id=new.content_type_id)
         Model = ct.model_class()
+        
         try:
             old = Model.objects.unmoderated(id=new.object_id)[0]
-        except ObjectDoesNotExist:
-            return _("Sorry. This object does not exsists already.")
+        except (ObjectDoesNotExist, IndexError):
+            return _("Sorry. There is no such object in the system.")
 
     adapter = get_adapter(old.__class__)
     new_data = new.field_dict
