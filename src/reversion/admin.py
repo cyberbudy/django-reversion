@@ -30,7 +30,8 @@ from django.utils.formats import localize
 from django.contrib import messages
 
 from reversion.models import Version, APPROVED
-from reversion.revisions import default_revision_manager, get_changes_between_models
+from reversion.revisions import default_revision_manager
+from reversion.diffs import changes_between_models
 
 
 class RollBackRevisionView(Exception):
@@ -328,7 +329,10 @@ class ModerationAdmin(admin.ModelAdmin):
         return obj.revision.date_created
 
     def changed_by(self, obj):
-        return obj.revision.user.username
+        try:
+            return obj.revision.user.username
+        except AttributeError:
+            return ""
 
     def object_type(self, obj):
         return ContentType.objects.get(id=obj.content_type_id).model_class()._meta.verbose_name.title()
@@ -339,11 +343,13 @@ class ModerationAdmin(admin.ModelAdmin):
 
     def change_view(self, request, object_id, extra_context=None):
         version = Version.objects.get(pk=object_id)
-        changes = get_changes_between_models(new=version)
+        changes = changes_between_models(new=version)
 
         if not isinstance(changes, dict):
-            version.delete()
+            # version.delete()
+            messages.add_message(request, messages.INFO, changes)
             return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
+
         if request.POST:
             if "reject" in request.POST:
                 version.reject()

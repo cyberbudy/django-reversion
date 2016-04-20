@@ -34,7 +34,7 @@ from reversion.models import (
 from reversion.signals import pre_revision_commit, post_revision_commit
 from reversion.errors import RevisionManagementError, RegistrationError
 from reversion.managers import VersionManager
-from reversion.diffs import *
+# from reversion.diffs import *
 try:
     from diff_match_patch import diff_match_patch as dmp
 except ImportError:  # pragma: no cover
@@ -748,77 +748,6 @@ class RevisionManager(object):
             else:
                 version_data = lambda: adapter.get_version_data(instance, self._revision_context_manager._db)
                 self._revision_context_manager.add_to_context(self, instance, version_data)
-
-
-def get_changes_between_models(new, old=None):
-    if not new:
-        return
-
-    if not old:
-        ct = ContentType.objects.get(id=new.content_type_id)
-        Model = ct.model_class()
-        try:
-            old = Model.objects.get(id=new.object_id)
-        except ObjectDoesNotExist:
-            return _("Sorry. This object does not exsist.")
-
-    adapter = get_adapter(old.__class__)
-    new_data = new.field_dict
-
-    if adapter:
-        opts = adapter.model._meta.concrete_model._meta
-        fields = adapter.fields or (field.name for field in opts.local_fields + opts.local_many_to_many)
-        fields = (opts.get_field(field) for field in fields if not field in adapter.exclude)
-    else:
-        fields = []
-
-    changes = []
-    diffs = {}
-    
-    for field in fields:
-        if field.many_to_many:
-            dif = ManyToManyDiff(
-                field,
-                getattr(old, field.name).all(),
-                field.related_model.objects.filter(
-                    id__in=new_data.get(field.name, []))
-            )
-
-            if dif.margin():
-                diffs[field.name] = dif
-            else:
-                continue
-        elif (isinstance(field, models.ImageField) or
-                filer_image_field and isinstance(field, FilerImageField)):
-            diff = ImageDiff(field, getattr(old, field.name+"_id"), new_data.get(field.name))
-
-            if diff.margin():
-                diffs[field.name] = diff
-            else:
-                continue
-        elif isinstance(field, models.ForeignKey):
-            value1 = getattr(old, field.name)
-
-            try:
-                value2 = field.related_model.objects.get(id=new_data.get(field.name, None))
-            except ObjectDoesNotExist:
-                value2 = None
-
-            dif = ForeignKeyDiff(field, value1, value2)
-
-            if dif.margin():
-                diffs[field.name] = dif
-            else:
-                continue
-        else:
-            value1 = getattr(old, field.name)
-            value2 = new_data.get(field.name)
-
-            if value1 != value2:
-                diffs[field.name] = BaseDiff(field, value1, value2)
-            else:
-                continue
-    return diffs
 
 
 # A shared revision manager.
