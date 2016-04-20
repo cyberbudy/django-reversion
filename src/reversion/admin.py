@@ -321,6 +321,7 @@ class ModerationAdmin(admin.ModelAdmin):
     readonly_fields = ("status",)
     list_display = ("object_repr", "display_status", "date_created", "object_type", "changed_by")
     list_filter = ("status",)
+    search_fields = ("object_repr",)
 
     def display_status(self, obj):
         return obj.get_status_display()
