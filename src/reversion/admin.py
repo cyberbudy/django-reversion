@@ -317,6 +317,7 @@ class VersionAdmin(admin.ModelAdmin):
 @admin.register(Version)
 class ModerationAdmin(admin.ModelAdmin):
     model = Version
+    list_select_related = True
     change_form_template = 'reversion/version_change_form.html'
     readonly_fields = ("status",)
     list_display = ("object_repr", "display_status", "date_created", "object_type", "changed_by")
@@ -325,9 +326,11 @@ class ModerationAdmin(admin.ModelAdmin):
 
     def display_status(self, obj):
         return obj.get_status_display()
+    display_status.admin_order_field = "status"
 
     def date_created(self, obj):
         return obj.revision.date_created
+    display_status.admin_order_field = "revision__date_created"
 
     def changed_by(self, obj):
         try:

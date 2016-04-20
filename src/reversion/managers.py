@@ -19,7 +19,7 @@ class VersionManager(Manager):
             query_set = super(VersionManager, self).get_query_set()
         return query_set.filter(**{"moderated_status": APPROVED})
 
-    def unmoderated(self, **kwargs):
+    def include_unmoderated(self, **kwargs):
         query_set = None
 
         if django_17():
@@ -27,20 +27,6 @@ class VersionManager(Manager):
         else:
             query_set = super(VersionManager, self).get_query_set()
         return query_set.filter(**kwargs)
-    # def unmoderated(self):
-    #     if django_17():
-    #         query_set = super(VersionManager, self).get_queryset()
-    #     else:
-    #         query_set = super(VersionManager, self).get_query_set()
-    #     return query_set.exclude(**{"moderated_status": APPROVED})
-
-
-    # def moderated(self):
-    #     if django_17():
-    #         query_set = super(VersionManager, self).get_queryset()
-    #     else:
-    #         query_set = super(VersionManager, self).get_query_set()
-    #     return query_set.filter(**{"moderated_status": APPROVED})
 
 
 
