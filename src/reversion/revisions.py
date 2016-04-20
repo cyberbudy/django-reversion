@@ -600,8 +600,6 @@ class RevisionManager(object):
 
                         if version.status == APPROVED:
                             version.approve()
-                        elif version.status == PENDING:
-                            version.defer()
                     # Save the meta information.
                     for cls, kwargs in meta:
                         cls._default_manager.db_manager(db).create(revision=revision, **kwargs)
@@ -612,9 +610,6 @@ class RevisionManager(object):
                     versions = new_versions,
                 )
                 # Return the revision.
-                # for version in new_versions:
-                #     if version.status == APPROVED:
-                #         version.approve()
                 return revision
 
     # Revision management API.

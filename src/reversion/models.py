@@ -243,6 +243,7 @@ class Version(models.Model):
     def revert(self):
         """Recovers the model in this version."""
         self.object_version.save()
+        self.defer()
 
     def approve(self):
         """approve current version, revert model object to this version"""
