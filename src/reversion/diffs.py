@@ -167,7 +167,7 @@ def get_changes_between_models(new, old=None):
         Model = ct.model_class()
         
         try:
-            old = Model.objects.unmoderated(id=new.object_id)[0]
+            old = Model.objects.include_unmoderated(id=new.object_id)[0]
         except (ObjectDoesNotExist, IndexError):
             return _("Sorry. There is no such object in the system.")
 
