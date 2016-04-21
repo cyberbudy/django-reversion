@@ -55,7 +55,7 @@ def moderation_safe_revert(versions):
         try:
             safe_revert(versions)
         except:
-            print([x.id for x in versions]
+            print([x.id for x in versions])
             safe_revert(versions)
 
 def get_versions_to_revert(versions):

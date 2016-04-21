@@ -76,11 +76,18 @@ class ForeignKeyDiff(BaseDiff):
     def set_values(self, old, new):
         self.old_value = getattr(old, self.field.name)
         try:
-            self.new_value = self.field.related_model.objects.get(
-                id=new.get(self.field.name, None))
+            objs = self.field.related_model.objects
+            if hasattr(objs, "include_unmoderated"):
+                self.new_value = objs.\
+                    include_unmoderated(id=new.get(self.field.name, None))[:1]
+            else:
+                self.new_value = objs.filter(id=new.get(self.field.name, None))[:1]
         except ObjectDoesNotExist:
             self.new_value = None
-
+        if self.new_value:
+            self.new_value = self.new_value[0]
+        else:
+            self.new_value = None
 
     @property
     def diff(self, pretty=True, cleanup="semantic"):
