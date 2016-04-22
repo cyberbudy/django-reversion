@@ -47,7 +47,7 @@ class BaseDiff(object):
 
     def margin(self):
         """check if new and old values are different"""
-        return self.new_value != self.old_value
+        return self.new_value != self.old_value and (self.new_value or self.old_value)
 
     @property
     def diff(self, pretty=True, cleanup="semantic"):

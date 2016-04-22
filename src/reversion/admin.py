@@ -320,26 +320,24 @@ class ModerationAdmin(admin.ModelAdmin):
     list_select_related = True
     change_form_template = 'reversion/version_change_form.html'
     readonly_fields = ("status",)
-    list_display = ("object_repr", "display_status", "date_created", "object_type", "changed_by")
+    list_display = ("object_repr", "status", "date_created", "object_type", "object_id", "changed_by")
     list_filter = ("status",)
     search_fields = ("object_repr",)
 
-    def display_status(self, obj):
-        return obj.get_status_display()
-    display_status.admin_order_field = "status"
-
     def date_created(self, obj):
         return obj.revision.date_created
-    display_status.admin_order_field = "revision__date_created"
+    date_created.admin_order_field = "revision__date_created"
 
     def changed_by(self, obj):
         try:
             return obj.revision.user.username
         except AttributeError:
             return ""
+    changed_by.admin_order_field = "revision__user__username"
 
     def object_type(self, obj):
         return ContentType.objects.get(id=obj.content_type_id).model_class()._meta.verbose_name.title()
+    object_type.admin_order_field = "content_type_id"
 
     # remove add button
     def has_add_permission(self, request):
