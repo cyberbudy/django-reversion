@@ -541,7 +541,6 @@ class RevisionManager(object):
             # Create all the versions without saving them
             ordered_objects = list(objects.keys())
             new_versions = [Version(**objects[obj]) for obj in ordered_objects]
-
             # Check if there's some change in all the revision's objects.
             save_revision = True
             if ignore_duplicates:
@@ -558,7 +557,7 @@ class RevisionManager(object):
                             save_revision = False
             # Only save if we're always saving, or have changes.
             if save_revision:
-                # check for previous objects' revisions, if pending - revert
+            #     # check for previous objects' revisions, if pending - revert
                 pendings = []
                 approved = []
 
@@ -567,14 +566,13 @@ class RevisionManager(object):
                         pendings.append(version)
                     elif version.status == APPROVED:
                         approved.append(version)
-                            
                 if pendings:
                     to_revert = get_versions_to_revert(pendings)
                     moderation_safe_revert(to_revert)
                     self.remove_old_pendings(pendings, db)
 
-                if approved:
-                    self.remove_old_approves(approved, db)                
+                # if approved:
+                #     self.remove_old_approves(approved, db)                
 
                 subqueries = [Q(object_id=version.object_id, content_type=version.content_type) for version in new_versions]
                 # Save a new revision.
@@ -600,6 +598,10 @@ class RevisionManager(object):
 
                         if version.status == APPROVED:
                             version.approve()
+                        #     version.remove_old_approves()
+                        # elif version.status == PENDING:
+                        #     version.revert_pending()
+
                     # Save the meta information.
                     for cls, kwargs in meta:
                         cls._default_manager.db_manager(db).create(revision=revision, **kwargs)

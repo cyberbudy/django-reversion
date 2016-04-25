@@ -1,6 +1,7 @@
 """Database models used by django-reversion."""
 
 from __future__ import unicode_literals
+import copy
 
 from django.contrib.contenttypes.models import ContentType
 try:
@@ -15,6 +16,7 @@ from django.utils.translation import ugettext_lazy as _
 from django.utils.encoding import force_text, python_2_unicode_compatible
 
 from reversion.errors import RevertError
+from reversion.signals import version_approve, version_reject
 
 APPROVED = 2
 PENDING = 1
@@ -202,6 +204,11 @@ class Version(models.Model):
 
     status = models.IntegerField(choices=MODERATION_STATUSES_CHOICES, default=PENDING)
 
+    def __init__(self, *args, **kwargs):
+        m = super(Version, self).__init__(*args, **kwargs)
+        self.obj_data_before = None
+        return m
+
     @property
     def object_version(self):
         """The stored version of the model."""
@@ -244,29 +251,68 @@ class Version(models.Model):
             setattr(self, "_field_dict_cache", result)
         return getattr(self, "_field_dict_cache")
 
-    def revert(self):
+    def revert(self, object_versions=None):
         """Recovers the model in this version."""
         self.object_version.save()
-        self.defer()
+        self.defer(object_versions)
+
+    def remove_old_approves(self):
+        vs = Version.objects.filter(
+            object_id=self.object_id,
+            content_type=self.content_type,
+            status__in=[APPROVED, REJECTED]
+        ).order_by("revision__date_created", "revision__date_updated")
+
+        if vs and len(vs) > 1:
+            vs[0].delete()
+
+    def remove_old_pendings(self):
+        Version.objects.filter(
+            object_id=self.object_id,
+            content_type=self.content_type,
+            status__in=[PENDING, REJECTED]
+        ).delete()
+
+    def revert_pending(self):
+        safe_revert(get_versions_to_revert([self]))
+        self.remove_old_pendings()
 
     def approve(self):
         """approve current version, revert model object to this version"""
+        # obj_before = self.object_version.object
+        object_versions = Version.objects.filter(
+            content_type_id=self.content_type_id,
+            object_id=self.object_id,
+            status=APPROVED
+        ).order_by("revision__date_created")
+
+        if not self.obj_data_before:
+            self.obj_data_before = object_versions[0].field_dict if object_versions else None
+
         if self.status != APPROVED:
             self.status = APPROVED
             self.save()
 
         with transaction.atomic():
-            self.revert()
-            obj = self.object_version.object
-            obj.moderated_status = APPROVED
-            obj.save()
+            self.revert(object_versions)
 
-    def defer(self):
-        object_versions = Version.objects.filter(
-            content_type_id=self.content_type_id,
-            object_id=self.object_id,
-            status=APPROVED
-        ).count()
+        version_approve.send(self,
+            before=self.obj_data_before,
+            after=self.field_dict,
+            instance=self.object_version.object
+            # current=obj_data_now
+        )
+        # self.revert_pending()
+        self.remove_old_pendings()
+        self.remove_old_approves()
+
+    def defer(self, object_versions=None):
+        if object_versions == None:
+            object_versions = Version.objects.filter(
+                content_type_id=self.content_type_id,
+                object_id=self.object_id,
+                status=APPROVED
+            ).count()
 
         if object_versions:
             obj = self.object_version.object
@@ -275,6 +321,9 @@ class Version(models.Model):
 
     def reject(self):
         """reject: remove current version and if no approved versions of object - object also"""
+        # obj = self.object_version.object
+        # obj_data_before = obj.status
+
         object_versions = Version.objects.filter(
             content_type_id=self.content_type_id,
             object_id=self.object_id,
@@ -285,6 +334,12 @@ class Version(models.Model):
             obj = self.object_version.object
             obj.delete()
         self.delete()
+        # version_reject.send(self,
+        #     before=obj_data_before,
+        #     current=obj.status
+        #     # current=obj_data_now
+        # )
+
 
 
     def __str__(self):
