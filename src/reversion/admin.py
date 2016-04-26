@@ -344,15 +344,21 @@ class ModerationAdmin(admin.ModelAdmin):
     def object_name(self, obj):
         try:
             _obj = ContentType.objects.get(id=obj.content_type_id)\
-                .model_class().objects.get(id=obj.object_id)
+                .model_class().objects
+            if hasattr(_obj, "include_unmoderated"):
+                _obj = _obj.include_unmoderated(id=obj.object_id)[0]
+            else:
+                _obj = _obj.get(id=obj.object_id)
             name = str(_obj)
-            print(name, obj.object_id, _obj)
+            # print(name, obj.object_repr, obj.object_id)
             if name:
                 return name
 
             field = "name" if hasattr(_obj, "name") else "header"
+            # print(field, obj.object_repr, obj.object_id)
             return _obj.get_trans_field(field, any_lang=True)
-        except:
+        except Exception, e:
+            print("except", str(e))
             return obj.object_repr
     # object_type.admin_order_field = "object_repr"
     
