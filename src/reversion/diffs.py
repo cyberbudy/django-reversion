@@ -42,8 +42,25 @@ class BaseDiff(object):
             new value - is version dict data or some data from it
             old value - is current object or some data from it
         """
-        self.old_value = getattr(old, self.field.name)
-        self.new_value = new.get(self.field.name)
+        self.choices = self.has_choices(old, self.field.name)
+
+        if self.choices:
+            self.old_value = self.get_choice_value(
+                getattr(old, self.field.name))
+            self.new_value = self.get_choice_value(
+                new.get(self.field.name))
+        else:
+            self.old_value = getattr(old, self.field.name)
+            self.new_value = new.get(self.field.name)
+
+    def has_choices(self, obj, field_name):
+        return obj._meta.get_field(field_name).choices
+
+    def get_choice_value(self, value):
+        for key, name in self.choices:
+            if key == value:
+                return name
+        return value
 
     def margin(self):
         """check if new and old values are different"""
@@ -52,6 +69,11 @@ class BaseDiff(object):
     @property
     def diff(self, pretty=True, cleanup="semantic"):
         """find changes between current value and previous version"""
+        if self.choices:
+            return {
+                "changes": "<del>{0}</del>\n<ins>{1}</ins>".format(
+                    self.old_value, self.new_value)
+            }
         clean_diff = None
         diffs = dmp.diff_main(
             force_text(self.old_value),
@@ -96,6 +118,16 @@ class ForeignKeyDiff(BaseDiff):
             "right": str(self.new_value)
         }
 
+
+class BooleanDiff(BaseDiff):
+    template = "reversion/foreign_key_diff.html"
+
+    @property
+    def diff(self, pretty=True, cleanup="semantic"):
+        return {
+            "left": self.old_value,
+            "right": self.new_value
+        }
 
 
 class ImageDiff(BaseDiff):
@@ -225,6 +257,8 @@ type_to_diff = {
     models.OneToOneField: ForeignKeyDiff,
     models.DateField: DateTimeDiff,
     models.DateTimeField: DateTimeDiff,
+    models.BooleanField: BooleanDiff,
+    models.NullBooleanField: BooleanDiff,
 }
 
 if filer_image:
