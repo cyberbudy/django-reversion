@@ -2,6 +2,7 @@
 
 from __future__ import unicode_literals
 import copy
+from itertools import chain
 
 from django.contrib.contenttypes.models import ContentType
 try:
@@ -253,7 +254,15 @@ class Version(models.Model):
 
     def revert(self, object_versions=None):
         """Recovers the model in this version."""
-        self.object_version.save()
+        from reversion.revisions import get_adapter
+
+        obj = self.object_version.object
+        fields = list(set(chain.from_iterable(
+            (field.name, field.attname) if hasattr(field, 'attname') else (field.name,)
+            for field in obj.__class__._meta.get_fields()
+            if not (field.many_to_one and field.related_model is None) and field.name not in get_adapter(obj.__class__).exclude
+        )))
+        self.object_version.save(update_fields=fields)
         self.defer(object_versions)
 
     def remove_old_approves(self):
@@ -317,7 +326,7 @@ class Version(models.Model):
         if object_versions:
             obj = self.object_version.object
             obj.moderated_status = APPROVED
-            obj.save()
+            obj.save(update_fields=["moderated_status"])
 
     def reject(self):
         """reject: remove current version and if no approved versions of object - object also"""

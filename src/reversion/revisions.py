@@ -64,6 +64,7 @@ class VersionAdapter(object):
     auto_approve_by_superuser = True
     auto_approve_by_staff = True
     auto_approve_perms = []
+    auto_approve_attribute = None
     # The serialization format to use.
     format = "json"
 
@@ -566,6 +567,7 @@ class RevisionManager(object):
                         pendings.append(version)
                     elif version.status == APPROVED:
                         approved.append(version)
+
                 if pendings:
                     to_revert = get_versions_to_revert(pendings)
                     moderation_safe_revert(to_revert)
@@ -746,6 +748,16 @@ class RevisionManager(object):
                 version_data = lambda: adapter.get_version_data(instance, self._revision_context_manager._db)
                 self._revision_context_manager.add_to_context(self, instance, version_data)
 
+
+def get_last_pendings(obj):
+    return Version.objects.filter(
+        status=PENDING, object_id=obj.id,
+        content_type=ContentType.objects.get_for_model(obj.__class__)
+    )
+
+
+# model modelrations
+get_last_pendings = get_last_pendings
 
 # A shared revision manager.
 default_revision_manager = RevisionManager("default")
