@@ -332,8 +332,7 @@ class Version(models.Model):
 
         if object_versions:
             obj = self.object_version.object
-            obj.moderated_status = APPROVED
-            self.object_version.save(update_fields=["moderated_status"])
+            obj.__class__.objects.filter(id=obj.id).update(moderated_status=APPROVED)
 
     def reject(self):
         """reject: remove current version and if no approved versions of object - object also"""
