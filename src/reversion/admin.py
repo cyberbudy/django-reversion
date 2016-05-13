@@ -198,7 +198,7 @@ class VersionAdmin(admin.ModelAdmin):
         if objs:
             obj = objs[0]
 
-        if obj and obj.status == APPROVED:
+        if obj and obj.version_status == APPROVED:
             messages.add_message(request, messages.INFO, _("This object has been approved and visible on the site"))
         elif obj:
             messages.add_message(request, messages.INFO, _("This object version has not been approved and not visible on the site right now"))
@@ -316,16 +316,116 @@ class VersionAdmin(admin.ModelAdmin):
 
 
 
+class RelatedListFilter(admin.SimpleListFilter):
+    """ hidden admin filter for custom url parameters """
+    title = "object"
+    parameter_name = "obj_id"
+
+    def lookups(self, request, model_admin):
+        return (
+            (str(x.id)+"_"+str(x.content_type_id),
+                str(x.object_id)+" "+x.content_type.model)
+            for x in Version.objects.all().select_related("content_type")
+        )
+
+    def queryset(self, request, queryset):
+        if self.value():
+            related, query = self.get_related_objects(queryset, request.GET.get("obj_id", "").split("_"), [],)
+
+            if not related or not query:
+                return queryset
+
+            for i in related:
+                if not i:
+                    continue
+                elif len(i) == 2 and query:
+                    query |= (Q(content_type_id=i[0]) & Q(object_pk=i[1]))
+        return queryset
+
+    def get_related_objects(self, queryset, data=[], related=[]):
+        content_id, obj_id = data
+
+        if not content_id or not obj_id:
+            return [[], queryset]
+
+        cont_type = ContentType.objects.get(id=content_id)
+        ObjModel = cont_type.model_class()
+        cur_obj = obj = list(ObjModel.objects.filter(id=obj_id))
+
+        try:
+            cur_obj = obj = list(ObjModel.include_unmoderated(id=obj_id))
+        except:
+            pass
+
+        if not obj:
+            return [[], queryset]
+        else:
+            obj = obj[0]
+
+        relations = list([
+            f for f in obj._meta.get_fields(include_hidden=True)
+            if f.many_to_many and f.auto_created
+        ]) + list([
+            f for f in obj._meta.get_fields()
+            if (f.one_to_many or f.one_to_one) and f.auto_created
+        ])
+        query = Q(object_pk=cur_obj[0].id) & Q(content_type=cont_type)
+
+        for i in relations:
+            if isinstance(i, list) and i:
+                related_model = i[0].related_model
+                remote_field = i[0].remote_field
+                obj = i[1]
+            elif i:
+                related_model = i.related_model
+                remote_field = i.remote_field
+
+            if not cont_type.model in remote_field.model._meta.db_table:
+                continue
+
+            tmp_rel_objects = [
+                (ContentType.objects.get_for_model(x).id, x.id)
+                for x in related_model.objects.filter(
+                        **{remote_field.name: obj}
+                    ).distinct()
+                if (ContentType.objects.get_for_model(x).id, x.id) not in related
+            ]
+            try:
+                tmp_rel_objects += [
+                    (ContentType.objects.get_for_model(x).id, x.id)
+                    for x in related_model.include_unmoderated.filter(
+                            **{remote_field.name: obj}
+                        ).distinct()
+                    if (ContentType.objects.get_for_model(x).id, x.id) not in related
+                ]
+            except:
+                pass
+
+            if tmp_rel_objects:
+                for i in tmp_rel_objects:
+                    if i in related:
+                        continue
+                    related += (i,)
+                    self.get_related_objects(queryset, data=i, related=related)
+            else:
+                continue
+        return [related, query]
+
+
+
 @admin.register(Version)
 class ModerationAdmin(admin.ModelAdmin):
     model = Version
     list_select_related = True
     change_form_template = 'reversion/version_change_form.html'
-    readonly_fields = ("status",)
-    list_display = ("object_name", "status", "date_created", "object_type", "object_id", "changed_by")
-    list_filter = ("status",)
-    search_fields = ("object_repr",)
-
+    readonly_fields = ("version_status",)
+    list_display = ("object_name", "version_status", "date_created", "object_type", "object_id", "changed_by")
+    list_filter = (
+        "version_status",
+        # RelatedListFilter
+    )
+    # search_fields = ("object_repr",)
+    list_per_page = 20
     def date_created(self, obj):
         return obj.revision.date_created
     date_created.admin_order_field = "revision__date_created"
@@ -378,7 +478,7 @@ class ModerationAdmin(admin.ModelAdmin):
 
             extra_context = {
                 "changes": changes,
-                "status": version.get_status_display()
+                "status": version.get_version_status_display()
             }
         except ObjectDoesNotExist:
             pass

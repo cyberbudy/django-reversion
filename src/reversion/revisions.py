@@ -132,6 +132,7 @@ class VersionAdapter(object):
             object_id_int = int(obj.pk)
         else:
             object_id_int = None
+        print(self.get_serialized_data(obj))
         return {
             "object_id": object_id,
             "object_id_int": object_id_int,
@@ -506,7 +507,7 @@ class RevisionManager(object):
         self._get_versions(db).filter(
             object_id__in=[x.object_id for x in versions],
             content_type__in=[x.content_type for x in versions],
-            status__in=[PENDING, REJECTED]
+            version_status__in=[PENDING, REJECTED]
         ).delete()
 
     def remove_old_approves(self, versions, db=None):
@@ -515,17 +516,20 @@ class RevisionManager(object):
         self._get_versions(db).filter(
             object_id__in=[x.object_id for x in versions],
             content_type__in=[x.content_type for x in versions],
-            status__in=[APPROVED, REJECTED]
+            version_status__in=[APPROVED, REJECTED]
         ).delete()
 
     def save_revision(self, objects, ignore_duplicates=True, user=None, comment="", meta=(), db=None):
         """Saves a new revision."""
         # Adapt the objects to a dict.
+        print(objects)
         if isinstance(objects, (list, tuple)):
             objects = dict(
                 (obj, self.get_adapter(obj.__class__).get_version_data(obj, db))
                 for obj in objects
             )
+        print(objects)
+
         # Create the revision.
         if objects:
             # Follow relationships.
@@ -537,8 +541,8 @@ class RevisionManager(object):
             # Set moderation statuses to versions due to user perms
             for obj in objects.keys():
                 adapter = self.get_adapter(obj.__class__)
-                objects[obj].update({"status": adapter.get_object_status(obj, user)})
-
+                objects[obj].update({"version_status": adapter.get_object_status(obj, user)})
+            print(objects, "objects")
             # Create all the versions without saving them
             ordered_objects = list(objects.keys())
             new_versions = [Version(**objects[obj]) for obj in ordered_objects]
@@ -563,9 +567,10 @@ class RevisionManager(object):
                 approved = []
 
                 for version in new_versions:
-                    if version.status == PENDING:
+                    print(version.version_status, version.field_dict)
+                    if version.version_status == PENDING:
                         pendings.append(version)
-                    elif version.status == APPROVED:
+                    elif version.version_status == APPROVED:
                         approved.append(version)
 
                 if pendings:
@@ -598,7 +603,7 @@ class RevisionManager(object):
                         version.revision = revision
                         version.save()
 
-                        if version.status == APPROVED:
+                        if version.version_status == APPROVED:
                             version.approve()
                         #     version.remove_old_approves()
                         # elif version.status == PENDING:
@@ -640,7 +645,7 @@ class RevisionManager(object):
             versions = versions.filter(object_id=object_id)
 
         if status:
-            versions.filter(status=status)
+            versions.filter(version_status=status)
         versions = versions.order_by("-pk")
         return versions
 

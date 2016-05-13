@@ -71,7 +71,7 @@ def get_versions_to_revert(versions):
         v = Version.objects.filter(
             content_type_id=version.content_type_id,
             object_id=version.object_id,
-            status=APPROVED
+            version_status=APPROVED
         ).order_by("-revision__date_created", "revision__date_updated")[:1]
         if v:
             approved.append(v[0])
@@ -203,7 +203,7 @@ class Version(models.Model):
 
     object_repr = models.TextField(help_text="A string representation of the object.")
 
-    status = models.IntegerField(choices=MODERATION_STATUSES_CHOICES, default=PENDING)
+    version_status = models.IntegerField(choices=MODERATION_STATUSES_CHOICES, default=PENDING)
 
     def __init__(self, *args, **kwargs):
         m = super(Version, self).__init__(*args, **kwargs)
@@ -226,11 +226,18 @@ class Version(models.Model):
         This method will follow parent links, if present.
         """
         if not hasattr(self, "_field_dict_cache"):
+            from reversion.revisions import get_adapter
             object_version = self.object_version
             obj = object_version.object
             result = {}
+            fields = list(set(chain.from_iterable(
+                (field.name, field.attname) if hasattr(field, 'attname') else (field.name,)
+                for field in obj.__class__._meta.get_fields()
+                if not (field.many_to_one and field.related_model is None) and field.name not in get_adapter(obj.__class__).exclude
+            )))
             for field in obj._meta.fields:
-                result[field.name] = field.value_from_object(obj)
+                if field.name in fields:
+                    result[field.name] = field.value_from_object(obj)
             result.update(object_version.m2m_data)
             # Add parent data.
             for parent_class, field in obj._meta.concrete_model._meta.parents.items():
@@ -269,7 +276,7 @@ class Version(models.Model):
         vs = Version.objects.filter(
             object_id=self.object_id,
             content_type=self.content_type,
-            status__in=[APPROVED, REJECTED]
+            version_status__in=[APPROVED, REJECTED]
         ).order_by("revision__date_created", "revision__date_updated")
 
         if vs and len(vs) > 1:
@@ -279,7 +286,7 @@ class Version(models.Model):
         Version.objects.filter(
             object_id=self.object_id,
             content_type=self.content_type,
-            status__in=[PENDING, REJECTED]
+            version_status__in=[PENDING, REJECTED]
         ).delete()
 
     def revert_pending(self):
@@ -292,14 +299,14 @@ class Version(models.Model):
         object_versions = Version.objects.filter(
             content_type_id=self.content_type_id,
             object_id=self.object_id,
-            status=APPROVED
+            version_status=APPROVED
         ).order_by("revision__date_created")
 
         if not self.obj_data_before:
             self.obj_data_before = object_versions[0].field_dict if object_versions else None
 
-        if self.status != APPROVED:
-            self.status = APPROVED
+        if self.version_status != APPROVED:
+            self.version_status = APPROVED
             self.save()
 
         with transaction.atomic():
@@ -320,13 +327,13 @@ class Version(models.Model):
             object_versions = Version.objects.filter(
                 content_type_id=self.content_type_id,
                 object_id=self.object_id,
-                status=APPROVED
+                version_status=APPROVED
             ).count()
 
         if object_versions:
             obj = self.object_version.object
             obj.moderated_status = APPROVED
-            obj.save(update_fields=["moderated_status"])
+            self.object_version.save(update_fields=["moderated_status"])
 
     def reject(self):
         """reject: remove current version and if no approved versions of object - object also"""
@@ -336,7 +343,7 @@ class Version(models.Model):
         object_versions = Version.objects.filter(
             content_type_id=self.content_type_id,
             object_id=self.object_id,
-            status=APPROVED
+            version_status=APPROVED
         ).count()
 
         if not object_versions:
