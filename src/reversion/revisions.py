@@ -132,7 +132,6 @@ class VersionAdapter(object):
             object_id_int = int(obj.pk)
         else:
             object_id_int = None
-        print(self.get_serialized_data(obj))
         return {
             "object_id": object_id,
             "object_id_int": object_id_int,
@@ -522,14 +521,12 @@ class RevisionManager(object):
     def save_revision(self, objects, ignore_duplicates=True, user=None, comment="", meta=(), db=None):
         """Saves a new revision."""
         # Adapt the objects to a dict.
-        print(objects)
         if isinstance(objects, (list, tuple)):
             objects = dict(
                 (obj, self.get_adapter(obj.__class__).get_version_data(obj, db))
                 for obj in objects
             )
         print(objects)
-
         # Create the revision.
         if objects:
             # Follow relationships.
@@ -542,7 +539,6 @@ class RevisionManager(object):
             for obj in objects.keys():
                 adapter = self.get_adapter(obj.__class__)
                 objects[obj].update({"version_status": adapter.get_object_status(obj, user)})
-            print(objects, "objects")
             # Create all the versions without saving them
             ordered_objects = list(objects.keys())
             new_versions = [Version(**objects[obj]) for obj in ordered_objects]
@@ -565,9 +561,7 @@ class RevisionManager(object):
             #     # check for previous objects' revisions, if pending - revert
                 pendings = []
                 approved = []
-
                 for version in new_versions:
-                    print(version.version_status, version.field_dict)
                     if version.version_status == PENDING:
                         pendings.append(version)
                     elif version.version_status == APPROVED:
