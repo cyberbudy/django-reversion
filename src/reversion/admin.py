@@ -197,7 +197,6 @@ class VersionAdmin(admin.ModelAdmin):
 
         if objs:
             obj = objs[0]
-
         if obj and obj.version_status == APPROVED:
             messages.add_message(request, messages.INFO, _("This object has been approved and visible on the site"))
         elif obj:
