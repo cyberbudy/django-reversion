@@ -333,9 +333,14 @@ class Version(models.Model):
         if object_versions:
             obj = self.object_version.object
             # print("!!!!!!!!!!!!!!!!!!!!!!APPROVE", obj)
-            # obj.__class__.objects.filter(id=obj.id).update(moderated_status=APPROVED)
-            setattr(obj, "moderated_status", APPROVED)
-            obj.save(update_fields=["moderated_status"])
+            db_obj = obj.__class__.objects.filter(id=obj.id)\
+                .exclude(moderated_status=APPROVED)
+
+            if db_obj:
+                db_obj[0].moderated_status = APPROVED
+                db_obj.save()
+            # setattr(obj, "moderated_status", APPROVED)
+            # obj.save(update_fields=["moderated_status"])
             # print(obj.__class__, obj.moderated_status, APPROVED)
 
     def reject(self):
