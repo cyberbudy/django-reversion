@@ -269,7 +269,10 @@ class Version(models.Model):
             for field in obj.__class__._meta.get_fields()
             if not (field.many_to_one and field.related_model is None) and field.name not in get_adapter(obj.__class__).exclude
         )))
-        self.object_version.save(update_fields=fields)
+        try:
+            self.object_version.save(update_fields=fields)
+        except:
+            pass
         self.defer(object_versions)
 
     def remove_old_approves(self):
@@ -293,7 +296,7 @@ class Version(models.Model):
         safe_revert(get_versions_to_revert([self]))
         self.remove_old_pendings()
 
-    def approve(self):
+    def approve(self, signal=False):
         """approve current version, revert model object to this version"""
         # obj_before = self.object_version.object
         object_versions = Version.objects.filter(
@@ -312,12 +315,14 @@ class Version(models.Model):
         with transaction.atomic():
             self.revert(object_versions)
 
-        version_approve.send(self,
-            before=self.obj_data_before,
-            after=self.field_dict,
-            instance=self.object_version.object
-            # current=obj_data_now
-        )
+        if signal:
+            version_approve.send(self,
+                before=self.obj_data_before,
+                after=self.field_dict,
+                instance=self.object_version.object
+                # current=obj_data_now
+            )
+
         # self.revert_pending()
         self.remove_old_pendings()
         self.remove_old_approves()
@@ -332,38 +337,44 @@ class Version(models.Model):
 
         if object_versions:
             obj = self.object_version.object
-            # print("!!!!!!!!!!!!!!!!!!!!!!APPROVE", obj)
-            db_obj = obj.__class__.objects.filter(id=obj.id)\
+            db_obj = obj.__class__.objects.include_unmoderated(id=obj.id)\
                 .exclude(moderated_status=APPROVED)
 
             if db_obj:
                 db_obj[0].moderated_status = APPROVED
-                db_obj.save()
+                db_obj[0].save()
             # setattr(obj, "moderated_status", APPROVED)
             # obj.save(update_fields=["moderated_status"])
             # print(obj.__class__, obj.moderated_status, APPROVED)
 
     def reject(self):
         """reject: remove current version and if no approved versions of object - object also"""
-        # obj = self.object_version.object
-        # obj_data_before = obj.status
+        obj_data_before = self.field_dict
 
         object_versions = Version.objects.filter(
             content_type_id=self.content_type_id,
             object_id=self.object_id,
             version_status=APPROVED
-        ).count()
+        )
+        obj = object_versions[0].object if object_versions else self.object_version.object 
 
-        if not object_versions:
-            obj = self.object_version.object
-            obj.delete()
+        if object_versions:
+            object_versions[0].revert()
+            db_obj = obj.__class__.objects.include_unmoderated(id=obj.id)\
+                .exclude(moderated_status=APPROVED)
+
+            if db_obj:
+                db_obj[0].moderated_status = APPROVED
+                db_obj[0].save(update_fields=["moderated_status"])
+
+        version_reject.send(self,
+            before=obj_data_before,
+            current=None,
+            instance=obj
+            # current=obj_data_now
+        )
+        #     obj.delete()
         self.delete()
-        # version_reject.send(self,
-        #     before=obj_data_before,
-        #     current=obj.status
-        #     # current=obj_data_now
-        # )
-
 
 
     def __str__(self):

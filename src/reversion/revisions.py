@@ -526,7 +526,6 @@ class RevisionManager(object):
                 (obj, self.get_adapter(obj.__class__).get_version_data(obj, db))
                 for obj in objects
             )
-        print(objects)
         # Create the revision.
         if objects:
             # Follow relationships.
@@ -754,9 +753,22 @@ def get_last_pendings(obj):
         content_type=ContentType.objects.get_for_model(obj.__class__)
     )
 
+def approve_object(obj):
+    if not obj:
+        return 
+    try:
+        # with transaction.atomic():
+        Version.objects.get(
+            object_id=obj.id,
+            content_type_id=ContentType.objects.get_for_model(obj.__class__)
+        ).approve()
+    except:
+        return "Nice try, buth no luck. Try again later"
+
 
 # model modelrations
 get_last_pendings = get_last_pendings
+approve_object = approve_object
 
 # A shared revision manager.
 default_revision_manager = RevisionManager("default")

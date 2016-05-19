@@ -466,12 +466,14 @@ class ModerationAdmin(admin.ModelAdmin):
         return False
 
     def change_view(self, request, object_id, extra_context=None):
+        version = None
+
         try:
             version = Version.objects.get(pk=object_id)
             changes = changes_between_models(new=version)
 
             if not isinstance(changes, dict):
-                # version.delete()
+                version.delete()
                 messages.add_message(request, messages.INFO, changes)
                 return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
 
@@ -483,13 +485,12 @@ class ModerationAdmin(admin.ModelAdmin):
             pass
 
         if request.POST:
-            if "reject" in request.POST:
+            if "reject" in request.POST and version:
                 version.reject()
                 return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
-            elif "approve" in request.POST:
-                version.approve()
+            elif "approve" in request.POST and version:
+                version.approve(signal=True)
                 return redirect(reverse("%s:reversion_version_changelist" % (self.admin_site.name)))
-                
         return super(ModerationAdmin, self).change_view(
             request,
             object_id,
